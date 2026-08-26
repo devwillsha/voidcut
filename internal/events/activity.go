@@ -23,6 +23,14 @@ type KeyboardActivity struct {
 	Meta map[string]string `json:"meta"`
 }
 
+// MouseActivity is the payload produced by the mouse listener.
+type MouseActivity struct {
+	Action string            `json:"action"`
+	X      int               `json:"x"`
+	Y      int               `json:"y"`
+	Meta   map[string]string `json:"meta,omitempty"`
+}
+
 // MicrophoneActivity is the payload produced by the microphone listener.
 type MicrophoneActivity struct {
 	SampleRate int               `json:"sample_rate"`
@@ -52,6 +60,31 @@ func NewKeyboardEvent(userID, sessionID, deviceID, traceID, key string, ts time.
 		SessionID: sessionID,
 		DeviceID:  deviceID,
 		EventType: string(KeyboardSource),
+		Version:   schema.VersionV1,
+		Timestamp: ts,
+		Payload:   raw,
+	}, nil
+}
+
+// NewMouseEvent builds a typed mouse event envelope using the shared schema contract.
+func NewMouseEvent(userID, sessionID, deviceID, traceID, action string, x, y int, meta map[string]string, ts time.Time) (schema.EventEnvelope, error) {
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta["source"] = "mouse"
+	payload := MouseActivity{Action: action, X: x, Y: y, Meta: meta}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return schema.EventEnvelope{}, err
+	}
+
+	return schema.EventEnvelope{
+		EventID:   "evt-" + traceID + "-mouse",
+		TraceID:   traceID,
+		UserID:    userID,
+		SessionID: sessionID,
+		DeviceID:  deviceID,
+		EventType: "mouse",
 		Version:   schema.VersionV1,
 		Timestamp: ts,
 		Payload:   raw,

@@ -30,6 +30,19 @@ type DeviceTokenResponse struct {
 	ExpiresIn int    `json:"expires_in"`
 }
 
+// CredentialsFromDeviceToken converts an approved Gateway response into the
+// local credential format used by the agent.
+func CredentialsFromDeviceToken(response DeviceTokenResponse, now time.Time) (Credentials, error) {
+	if response.Status != "approved" || strings.TrimSpace(response.Token) == "" {
+		return Credentials{}, ErrInvalidCredentials
+	}
+	credentials := Credentials{Token: response.Token, UserID: response.UserID}
+	if response.ExpiresIn > 0 {
+		credentials.ExpiresAt = now.Add(time.Duration(response.ExpiresIn) * time.Second)
+	}
+	return credentials, credentials.Validate(now)
+}
+
 // DeviceLoginClient requests device-login codes from the Gateway.
 type DeviceLoginClient struct {
 	BaseURL    string

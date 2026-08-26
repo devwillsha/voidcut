@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -63,5 +66,69 @@ func TestDeviceLoginClientRejectsBadResponses(t *testing.T) {
 func TestDeviceLoginClientRequiresGatewayURL(t *testing.T) {
 	if _, err := (DeviceLoginClient{}).Start(context.Background()); err == nil {
 		t.Fatal("Start() returned nil error for empty gateway URL")
+	}
+}
+
+func TestDeviceLoginClientPollsUntilApproved(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/auth/device/token" || request.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		var body struct {
+			DeviceCode string `json:"device_code"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body.DeviceCode != "device-1" {
+			t.Errorf("device code = %q, want device-1", body.DeviceCode)
+		}
+		if attempts.Add(1) == 1 {
+			_, _ = writer.Write([]byte(`{"status":"pending"}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"status":"approved","token":"token-1","user_id":"user-1","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	response, err := (DeviceLoginClient{BaseURL: server.URL}).Poll(context.Background(), DeviceCodeResponse{DeviceCode: "device-1", Interval: 1, ExpiresIn: 5})
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if response.Status != "approved" || response.Token != "token-1" || attempts.Load() != 2 {
+		t.Fatalf("unexpected poll result: %+v after %d attempts", response, attempts.Load())
+	}
+}
+
+func TestDeviceLoginClientPollStopsOnCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (DeviceLoginClient{BaseURL: server.URL}).Poll(ctx, DeviceCodeResponse{DeviceCode: "device-1", Interval: 1, ExpiresIn: 5})
+	if err == nil {
+		t.Fatal("Poll() returned nil error after cancellation")
+	}
+}
+
+func TestDeviceLoginClientPollRejectsTerminalErrors(t *testing.T) {
+	for status, expected := range map[string]error{
+		"expired": ErrDeviceLoginExpired,
+		"denied":  ErrDeviceLoginDenied,
+	} {
+		t.Run(status, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				_, _ = writer.Write([]byte(`{"status":"` + status + `"}`))
+			}))
+			defer server.Close()
+			_, err := (DeviceLoginClient{BaseURL: server.URL}).Poll(context.Background(), DeviceCodeResponse{DeviceCode: "device-1", Interval: 1, ExpiresIn: 5})
+			if !errors.Is(err, expected) {
+				t.Fatalf("Poll() error = %v, want %v", err, expected)
+			}
+		})
 	}
 }

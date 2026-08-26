@@ -49,6 +49,14 @@ func main() {
 		if openErr := auth.OpenBrowser(context.Background(), deviceCode.VerificationURL); openErr != nil {
 			logger.Warn("could not open verification URL", zap.Error(openErr))
 		}
+		tokenResponse, pollErr := (auth.DeviceLoginClient{BaseURL: cfg.GatewayURL}).Poll(context.Background(), deviceCode)
+		if pollErr != nil {
+			logger.Warn("device login did not complete", zap.Error(pollErr))
+			break
+		}
+		logger.Info("device login approved",
+			zap.String("user_id", tokenResponse.UserID),
+		)
 	default:
 		logger.Warn("could not read local credentials; device login required",
 			zap.Error(err),

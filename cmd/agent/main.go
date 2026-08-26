@@ -46,6 +46,9 @@ func main() {
 			zap.Int("expires_in", deviceCode.ExpiresIn),
 			zap.Int("interval", deviceCode.Interval),
 		)
+		if openErr := auth.OpenBrowser(context.Background(), deviceCode.VerificationURL); openErr != nil {
+			logger.Warn("could not open verification URL", zap.Error(openErr))
+		}
 	default:
 		logger.Warn("could not read local credentials; device login required",
 			zap.Error(err),

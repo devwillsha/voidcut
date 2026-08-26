@@ -10,6 +10,7 @@ import (
 	"github.com/devwillsha/voidcut/internal/auth"
 	"github.com/devwillsha/voidcut/internal/config"
 	"github.com/devwillsha/voidcut/internal/logging"
+	natspublisher "github.com/devwillsha/voidcut/internal/messaging/nats"
 	"go.uber.org/zap"
 )
 
@@ -62,4 +63,14 @@ func main() {
 			zap.Error(err),
 		)
 	}
+
+	activityPublisher, publishErr := natspublisher.Connect(cfg.NATSURL)
+	if publishErr != nil {
+		logger.Warn("could not connect to NATS", zap.Error(publishErr))
+		return
+	}
+	defer activityPublisher.Close()
+	logger.Info("connected to NATS",
+		zap.String("activity_subject", "activity.events.v1"),
+	)
 }

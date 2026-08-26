@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"time"
 
 	agentlifecycle "github.com/devwillsha/voidcut/internal/agent"
@@ -28,8 +29,8 @@ func main() {
 	defer logger.Sync()
 
 	logger.Info("agent starting",
+		zap.Int("pid", os.Getpid()),
 		zap.String("env", cfg.Env),
-		zap.String("nats_url", cfg.NATSURL),
 	)
 
 	credentials, err := auth.Load()

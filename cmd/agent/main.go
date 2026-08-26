@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	agentlifecycle "github.com/devwillsha/voidcut/internal/agent"
 	"github.com/devwillsha/voidcut/internal/auth"
 	"github.com/devwillsha/voidcut/internal/config"
 	"github.com/devwillsha/voidcut/internal/logging"
@@ -17,6 +18,8 @@ import (
 
 func main() {
 	cfg := config.Load()
+	runContext, stop := agentlifecycle.SignalContext(context.Background())
+	defer stop()
 
 	logger, err := logging.New("agent")
 	if err != nil {
@@ -37,7 +40,7 @@ func main() {
 		)
 	case errors.Is(err, auth.ErrCredentialsNotFound), errors.Is(err, auth.ErrInvalidCredentials):
 		logger.Info("local credentials unavailable; requesting device code")
-		deviceCode, requestErr := (auth.DeviceLoginClient{BaseURL: cfg.GatewayURL}).Start(context.Background())
+		deviceCode, requestErr := (auth.DeviceLoginClient{BaseURL: cfg.GatewayURL}).Start(runContext)
 		if requestErr != nil {
 			logger.Warn("could not request device code", zap.Error(requestErr))
 			break
@@ -48,10 +51,10 @@ func main() {
 			zap.Int("expires_in", deviceCode.ExpiresIn),
 			zap.Int("interval", deviceCode.Interval),
 		)
-		if openErr := auth.OpenBrowser(context.Background(), deviceCode.VerificationURL); openErr != nil {
+		if openErr := auth.OpenBrowser(runContext, deviceCode.VerificationURL); openErr != nil {
 			logger.Warn("could not open verification URL", zap.Error(openErr))
 		}
-		tokenResponse, pollErr := (auth.DeviceLoginClient{BaseURL: cfg.GatewayURL}).Poll(context.Background(), deviceCode)
+		tokenResponse, pollErr := (auth.DeviceLoginClient{BaseURL: cfg.GatewayURL}).Poll(runContext, deviceCode)
 		if pollErr != nil {
 			logger.Warn("device login did not complete", zap.Error(pollErr))
 			break
@@ -86,4 +89,9 @@ func main() {
 	logger.Info("connected to NATS",
 		zap.String("activity_subject", "activity.events.v1"),
 	)
+	<-runContext.Done()
+	logger.Info("agent shutdown requested")
+	if shutdownErr := agentlifecycle.GracefulShutdown(activityPublisher.Flush, activityPublisher.Close); shutdownErr != nil {
+		logger.Warn("agent shutdown completed with errors", zap.Error(shutdownErr))
+	}
 }

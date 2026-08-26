@@ -12,8 +12,11 @@ import (
 	agentlifecycle "github.com/devwillsha/voidcut/internal/agent"
 	"github.com/devwillsha/voidcut/internal/auth"
 	"github.com/devwillsha/voidcut/internal/config"
+	"github.com/devwillsha/voidcut/internal/listeners/input"
+	"github.com/devwillsha/voidcut/internal/listeners/microphone"
 	"github.com/devwillsha/voidcut/internal/logging"
 	natspublisher "github.com/devwillsha/voidcut/internal/messaging/nats"
+	"github.com/devwillsha/voidcut/internal/schema"
 	"go.uber.org/zap"
 )
 
@@ -86,11 +89,57 @@ func main() {
 		logger.Warn("could not connect to NATS", zap.Error(publishErr))
 		return
 	}
-	defer activityPublisher.Close()
 	logger.Info("connected to NATS",
 		zap.String("activity_subject", "activity.events.v1"),
 	)
-	<-runContext.Done()
+	sessionID, idErr := agentlifecycle.NewID("session")
+	if idErr != nil {
+		logger.Warn("could not create session ID", zap.Error(idErr))
+		return
+	}
+	traceID, idErr := agentlifecycle.NewID("trace")
+	if idErr != nil {
+		logger.Warn("could not create trace ID", zap.Error(idErr))
+		return
+	}
+	microphoneSource, sourceErr := microphone.NewPortAudioSource(cfg.MicSampleRate, cfg.MicChunkSize)
+	if sourceErr != nil {
+		logger.Warn("could not start microphone listener", zap.Error(sourceErr))
+		return
+	}
+	inputSource, sourceErr := input.NewGlobalSource()
+	if sourceErr != nil {
+		_ = microphoneSource.Close()
+		logger.Warn("could not start keyboard and mouse listener", zap.Error(sourceErr))
+		return
+	}
+	logger.Info("hardware listeners started",
+		zap.String("session_id", sessionID),
+		zap.String("trace_id", traceID),
+	)
+	listenerErr := agentlifecycle.RunListeners(runContext, microphoneSource, inputSource,
+		microphone.Config{
+			SampleRate: cfg.MicSampleRate,
+			ChunkSize:  cfg.MicChunkSize,
+			Threshold:  cfg.MicThreshold,
+			UserID:     credentials.UserID,
+			SessionID:  sessionID,
+			DeviceID:   "local-agent",
+			TraceID:    traceID,
+		},
+		input.Config{
+			UserID:    credentials.UserID,
+			SessionID: sessionID,
+			DeviceID:  "local-agent",
+			TraceID:   traceID,
+		},
+		func(event schema.EventEnvelope) error {
+			return activityPublisher.PublishActivity(context.Background(), event)
+		},
+	)
+	if listenerErr != nil {
+		logger.Warn("hardware listener stopped", zap.Error(listenerErr))
+	}
 	logger.Info("agent shutdown requested")
 	if shutdownErr := agentlifecycle.GracefulShutdown(activityPublisher.Flush, activityPublisher.Close); shutdownErr != nil {
 		logger.Warn("agent shutdown completed with errors", zap.Error(shutdownErr))

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDeviceLoginClientStart(t *testing.T) {
@@ -130,5 +131,27 @@ func TestDeviceLoginClientPollRejectsTerminalErrors(t *testing.T) {
 				t.Fatalf("Poll() error = %v, want %v", err, expected)
 			}
 		})
+	}
+}
+
+func TestCredentialsFromDeviceToken(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	credentials, err := CredentialsFromDeviceToken(DeviceTokenResponse{
+		Status:    "approved",
+		Token:     "token-1",
+		UserID:    "user-1",
+		ExpiresIn: 3600,
+	}, now)
+	if err != nil {
+		t.Fatalf("CredentialsFromDeviceToken() error = %v", err)
+	}
+	if credentials.Token != "token-1" || credentials.UserID != "user-1" || !credentials.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("unexpected credentials: %+v", credentials)
+	}
+}
+
+func TestCredentialsFromDeviceTokenRejectsUnapprovedResponse(t *testing.T) {
+	if _, err := CredentialsFromDeviceToken(DeviceTokenResponse{Status: "pending", Token: "token"}, time.Now()); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("CredentialsFromDeviceToken() error = %v, want ErrInvalidCredentials", err)
 	}
 }

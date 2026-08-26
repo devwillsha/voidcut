@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"time"
 
 	"github.com/devwillsha/voidcut/internal/auth"
 	"github.com/devwillsha/voidcut/internal/config"
@@ -56,6 +57,18 @@ func main() {
 		}
 		logger.Info("device login approved",
 			zap.String("user_id", tokenResponse.UserID),
+		)
+		credentials, saveErr := auth.CredentialsFromDeviceToken(tokenResponse, time.Now())
+		if saveErr != nil {
+			logger.Warn("could not prepare local credentials", zap.Error(saveErr))
+			break
+		}
+		if saveErr := auth.Save(credentials); saveErr != nil {
+			logger.Warn("could not save local credentials", zap.Error(saveErr))
+			break
+		}
+		logger.Info("local credentials saved",
+			zap.String("user_id", credentials.UserID),
 		)
 	default:
 		logger.Warn("could not read local credentials; device login required",

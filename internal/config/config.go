@@ -8,6 +8,7 @@ import (
 // Config holds settings common to every service and the agent.
 type Config struct {
 	Env         string // "development", "staging", "production"
+	GatewayURL  string
 	NATSURL     string
 	PostgresDSN string
 	RedisAddr   string
@@ -18,6 +19,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		Env:         getEnv("VOIDCUT_ENV", "development"),
+		GatewayURL:  getEnv("VOIDCUT_GATEWAY_URL", "http://localhost:8080"),
 		NATSURL:     getEnv("VOIDCUT_NATS_URL", "nats://localhost:4222"),
 		PostgresDSN: getEnv("VOIDCUT_POSTGRES_DSN", "postgres://voidcut:voidcut@localhost:5432/voidcut?sslmode=disable"),
 		RedisAddr:   getEnv("VOIDCUT_REDIS_ADDR", "localhost:6379"),

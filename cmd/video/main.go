@@ -14,7 +14,6 @@ import (
 	"github.com/devwillsha/voidcut/internal/logging"
 	"github.com/devwillsha/voidcut/internal/repository/postgres"
 	"github.com/devwillsha/voidcut/internal/services/video"
-	natsgo "github.com/nats-io/nats.go"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,31 +37,26 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Connect to NATS.
-	nc, err := natsgo.Connect(cfg.NATSURL)
-	if err != nil {
-		sugar.Fatalf("connect to NATS: %v", err)
-	}
-	defer nc.Close()
-
-	// Create JetStream context for publishing job.created events.
-	js, err := nc.JetStream()
-	if err != nil {
-		sugar.Fatalf("create JetStream context: %v", err)
-	}
-
 	// Create repositories and services.
 	jobsRepo, err := postgres.NewJobsRepository(pool)
 	if err != nil {
 		sugar.Fatalf("create jobs repository: %v", err)
 	}
 
+	// Create object store for video storage (local filesystem for now,
+	// can be replaced with S3-compatible storage like MinIO or AWS S3).
 	uploadDir := os.Getenv("VOIDCUT_VIDEO_UPLOAD_DIR")
 	if uploadDir == "" {
 		uploadDir = "./videos"
 	}
 
-	videoSvc, err := video.NewService(jobsRepo, js, uploadDir)
+	objectStore, err := video.NewLocalObjectStore(uploadDir)
+	if err != nil {
+		sugar.Fatalf("create object store: %v", err)
+	}
+
+	// Create VideoService with repositories and object store.
+	videoSvc, err := video.NewService(jobsRepo, objectStore)
 	if err != nil {
 		sugar.Fatalf("create video service: %v", err)
 	}

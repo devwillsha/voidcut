@@ -18,8 +18,9 @@ import (
 )
 
 func TestUploadHandler(t *testing.T) {
-	// Create minimal service without real DB/NATS for handler tests.
-	svc, _ := video.NewService(&postgres.JobsRepository{}, nil, t.TempDir())
+	// Create minimal service with mock object store for handler tests.
+	objectStore := newMockObjectStore()
+	svc, _ := video.NewService(&postgres.JobsRepository{}, objectStore)
 	handler := video.UploadHandler(svc)
 
 	t.Run("missing video file", func(t *testing.T) {
@@ -103,8 +104,8 @@ func TestUploadHandlerWithValidDB(t *testing.T) {
 	defer pool.Close()
 
 	repo, _ := postgres.NewJobsRepository(pool)
-	tmpDir := t.TempDir()
-	svc, _ := video.NewService(repo, nil, tmpDir)
+	objectStore := newMockObjectStore()
+	svc, _ := video.NewService(repo, objectStore)
 	handler := video.UploadHandler(svc)
 
 	t.Run("valid upload with DB returns 201", func(t *testing.T) {

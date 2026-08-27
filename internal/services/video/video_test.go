@@ -3,29 +3,59 @@ package video_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"testing"
 
 	"github.com/devwillsha/voidcut/internal/repository/postgres"
 	"github.com/devwillsha/voidcut/internal/services/video"
 )
 
+// mockObjectStore is a fake ObjectStore for testing.
+type mockObjectStore struct {
+	stored map[string][]byte
+}
+
+func newMockObjectStore() *mockObjectStore {
+	return &mockObjectStore{stored: make(map[string][]byte)}
+}
+
+func (m *mockObjectStore) Put(ctx context.Context, key string, data io.Reader, maxSize int64) (string, error) {
+	buf := make([]byte, maxSize)
+	n, err := data.Read(buf)
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	m.stored[key] = buf[:n]
+	return "s3://bucket/" + key, nil
+}
+
+func (m *mockObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if data, ok := m.stored[key]; ok {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+	return nil, io.EOF
+}
+
+func (m *mockObjectStore) Delete(ctx context.Context, key string) error {
+	delete(m.stored, key)
+	return nil
+}
+
 func TestNewService(t *testing.T) {
-	tmpDir := t.TempDir()
 	tests := []struct {
-		name    string
-		repo    *postgres.JobsRepository
-		jsCtx   interface{}
-		dir     string
-		wantErr bool
+		name        string
+		repo        *postgres.JobsRepository
+		objectStore video.ObjectStore
+		wantErr     bool
 	}{
-		{"valid", &postgres.JobsRepository{}, "mock-context", tmpDir, false},
-		{"nil repo", nil, "mock-context", tmpDir, true},
-		{"empty dir", &postgres.JobsRepository{}, "mock-context", "", true},
+		{"valid", &postgres.JobsRepository{}, newMockObjectStore(), false},
+		{"nil repo", nil, newMockObjectStore(), true},
+		{"nil object store", &postgres.JobsRepository{}, nil, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := video.NewService(tt.repo, nil, tt.dir)
+			_, err := video.NewService(tt.repo, tt.objectStore)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("NewService() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -34,8 +64,8 @@ func TestNewService(t *testing.T) {
 }
 
 func TestUploadRequiresFields(t *testing.T) {
-	tmpDir := t.TempDir()
-	svc, _ := video.NewService(&postgres.JobsRepository{}, nil, tmpDir)
+	objectStore := newMockObjectStore()
+	svc, _ := video.NewService(&postgres.JobsRepository{}, objectStore)
 
 	tests := []struct {
 		name    string

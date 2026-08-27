@@ -3,11 +3,16 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/devwillsha/voidcut/internal/config"
+	"github.com/devwillsha/voidcut/internal/gateway"
 	"github.com/devwillsha/voidcut/internal/logging"
-	"go.uber.org/zap"
 )
 
 func main() {
@@ -19,8 +24,45 @@ func main() {
 	}
 	defer logger.Sync()
 
-	logger.Info("gateway starting",
-		zap.String("env", cfg.Env),
-		zap.Bool("postgres_dsn_set", cfg.PostgresDSN != ""),
+	sugar := logger.Sugar()
+
+	sugar.Infow("gateway starting",
+		"env", cfg.Env,
+		"postgres_dsn_set", cfg.PostgresDSN != "",
 	)
+
+	// Create and configure the API Gateway.
+	gw, err := gateway.New(":8080", sugar)
+	if err != nil {
+		sugar.Fatalf("failed to create gateway: %v", err)
+	}
+
+	// Mount health check endpoints.
+	gw.MountReadiness()
+	gw.MountLiveness()
+
+	// Start the gateway in a background goroutine.
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- gw.Start()
+	}()
+
+	// Wait for shutdown signal or startup error.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case sig := <-sigChan:
+		sugar.Infow("received signal, shutting down", "signal", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = ctx
+		// The Gateway does not have a built-in graceful shutdown for the listener.
+		// In production, we would use http.Server with Shutdown() method (see Phase 3).
+		_ = gw.Stop()
+	case err := <-errChan:
+		if err != nil {
+			sugar.Fatalf("gateway error: %v", err)
+		}
+	}
 }

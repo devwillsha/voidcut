@@ -10,9 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/devwillsha/voidcut/internal/auth"
 	"github.com/devwillsha/voidcut/internal/config"
 	"github.com/devwillsha/voidcut/internal/gateway"
 	"github.com/devwillsha/voidcut/internal/logging"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -40,6 +42,15 @@ func main() {
 	// Mount health check endpoints.
 	gw.MountReadiness()
 	gw.MountLiveness()
+
+	// Initialize Redis and device login service.
+	redis := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	deviceSvc, err := auth.NewDeviceLoginService(redis)
+	if err != nil {
+		sugar.Fatalf("failed to create device login service: %v", err)
+	}
+	gw.MountDeviceAuthRoutes(deviceSvc)
+	defer redis.Close()
 
 	// Start the gateway in a background goroutine.
 	errChan := make(chan error, 1)

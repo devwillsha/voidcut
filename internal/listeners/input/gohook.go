@@ -17,6 +17,8 @@ type GlobalSource struct {
 	once   sync.Once
 }
 
+var errIgnoredHookEvent = errors.New("ignore gohook lifecycle event")
+
 // NewGlobalSource starts global keyboard and mouse monitoring.
 func NewGlobalSource() (Source, error) {
 	events := hook.Start()
@@ -31,14 +33,20 @@ func (source *GlobalSource) Read(ctx context.Context) (Event, error) {
 	if source == nil || source.events == nil {
 		return Event{}, errors.New("global input source is not initialized")
 	}
-	select {
-	case <-ctx.Done():
-		return Event{}, ctx.Err()
-	case event, ok := <-source.events:
-		if !ok {
-			return Event{}, errors.New("global input hook stopped")
+	for {
+		select {
+		case <-ctx.Done():
+			return Event{}, ctx.Err()
+		case event, ok := <-source.events:
+			if !ok {
+				return Event{}, errors.New("global input hook stopped")
+			}
+			inputEvent, err := normalizeHookEvent(event)
+			if errors.Is(err, errIgnoredHookEvent) {
+				continue
+			}
+			return inputEvent, err
 		}
-		return normalizeHookEvent(event)
 	}
 }
 
@@ -53,6 +61,8 @@ func (source *GlobalSource) Close() error {
 
 func normalizeHookEvent(event hook.Event) (Event, error) {
 	switch event.Kind {
+	case hook.HookEnabled, hook.HookDisabled, hook.FakeEvent:
+		return Event{}, errIgnoredHookEvent
 	case hook.KeyDown:
 		key := string(event.Keychar)
 		if event.Keychar == hook.CharUndefined || key == "" {
@@ -71,6 +81,6 @@ func normalizeHookEvent(event hook.Event) (Event, error) {
 	case hook.MouseWheel:
 		return Event{Type: Mouse, Action: "wheel", X: int(event.X), Y: int(event.Y), Meta: map[string]string{"amount": fmt.Sprint(event.Amount), "direction": fmt.Sprint(event.Direction)}}, nil
 	default:
-		return Event{}, fmt.Errorf("unsupported OS input event kind %d", event.Kind)
+		return Event{}, errIgnoredHookEvent
 	}
 }

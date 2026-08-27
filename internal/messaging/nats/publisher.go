@@ -18,6 +18,15 @@ type Publisher struct {
 	connection *natsgo.Conn
 }
 
+// Connection exposes the underlying NATS connection for setup operations that
+// need JetStream administration APIs.
+func (publisher *Publisher) Connection() *natsgo.Conn {
+	if publisher == nil {
+		return nil
+	}
+	return publisher.connection
+}
+
 // Connect opens a NATS connection for activity and job event publishing.
 func Connect(url string) (*Publisher, error) {
 	if strings.TrimSpace(url) == "" {

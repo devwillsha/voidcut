@@ -7,18 +7,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/devwillsha/voidcut/internal/events"
 	"github.com/devwillsha/voidcut/internal/repository/postgres"
-	"github.com/devwillsha/voidcut/internal/schema"
-	natsgo "github.com/nats-io/nats.go"
 )
 
 // UploadRequest contains the metadata for a video upload.
@@ -37,38 +32,34 @@ type UploadResponse struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// Service manages video uploads and job lifecycle.
+// Service manages video uploads and job creation.
 type Service struct {
-	jobsRepo  *postgres.JobsRepository
-	js        natsgo.JetStreamContext
-	uploadDir string
+	jobsRepo      *postgres.JobsRepository
+	objectStore   ObjectStore
+	maxUploadSize int64
 }
 
 // NewService creates a new VideoService.
-func NewService(jobsRepo *postgres.JobsRepository, jsCtx natsgo.JetStreamContext, uploadDir string) (*Service, error) {
+func NewService(jobsRepo *postgres.JobsRepository, objectStore ObjectStore) (*Service, error) {
 	if jobsRepo == nil {
 		return nil, errors.New("jobs repository is required")
 	}
-	// jsCtx can be nil for testing; NATS publishing will be skipped.
-	if uploadDir == "" {
-		return nil, errors.New("upload directory is required")
-	}
-
-	// Ensure upload directory exists.
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		return nil, fmt.Errorf("create upload directory: %w", err)
+	if objectStore == nil {
+		return nil, errors.New("object store is required")
 	}
 
 	return &Service{
-		jobsRepo:  jobsRepo,
-		js:        jsCtx,
-		uploadDir: uploadDir,
+		jobsRepo:      jobsRepo,
+		objectStore:   objectStore,
+		maxUploadSize: 500 * 1024 * 1024, // 500MB limit
 	}, nil
 }
 
 // Upload processes a video upload request and creates a job record.
+// Returns immediately after storing video and creating the job record.
+// NATS publishing is handled separately (Task 27).
 func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResponse, error) {
-	if s == nil || s.jobsRepo == nil {
+	if s == nil || s.jobsRepo == nil || s.objectStore == nil {
 		return UploadResponse{}, errors.New("service is not properly initialized")
 	}
 	if req.SessionID == "" {
@@ -85,14 +76,27 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResponse
 	jobID := generateID(16)
 	traceID := generateID(16)
 
-	// Read and store video file.
-	videoPath := filepath.Join(s.uploadDir, jobID+".mp4")
-	if err := s.storeVideo(videoPath, req.VideoData); err != nil {
+	// Wrap video data to enforce size limit before storing.
+	limitedData := &io.LimitedReader{
+		R: req.VideoData,
+		N: s.maxUploadSize,
+	}
+
+	// Store video using ObjectStore (S3-compatible or local).
+	objectKey := jobID + ".mp4"
+	inputURL, err := s.objectStore.Put(ctx, objectKey, limitedData, s.maxUploadSize)
+	if err != nil {
 		return UploadResponse{}, fmt.Errorf("store video: %w", err)
 	}
 
+	// Verify that we didn't exceed the size limit.
+	if limitedData.N < 0 {
+		// Best-effort cleanup.
+		_ = s.objectStore.Delete(ctx, objectKey)
+		return UploadResponse{}, errors.New("video exceeds maximum upload size of 500MB")
+	}
+
 	// Create job record in database.
-	inputURL := "file://" + videoPath
 	job := postgres.Job{
 		JobID:     jobID,
 		TraceID:   traceID,
@@ -105,14 +109,8 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResponse
 	createdJob, err := s.jobsRepo.Create(ctx, job)
 	if err != nil {
 		// Best-effort cleanup.
-		_ = os.Remove(videoPath)
+		_ = s.objectStore.Delete(ctx, objectKey)
 		return UploadResponse{}, fmt.Errorf("create job record: %w", err)
-	}
-
-	// Publish job.created event to NATS.
-	if err := s.publishJobCreatedEvent(ctx, createdJob, req.DeviceID); err != nil {
-		// Log but don't fail the upload; the job record exists.
-		fmt.Fprintf(os.Stderr, "failed to publish job.created event: %v\n", err)
 	}
 
 	return UploadResponse{
@@ -121,63 +119,6 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResponse
 		InputURL:  inputURL,
 		CreatedAt: createdJob.CreatedAt.Format(time.RFC3339),
 	}, nil
-}
-
-// storeVideo writes video data to disk.
-func (s *Service) storeVideo(path string, data io.Reader) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
-	}
-	defer file.Close()
-
-	// Limit read to 500MB to prevent DoS.
-	limitedReader := io.LimitReader(data, 500*1024*1024)
-	if _, err := io.Copy(file, limitedReader); err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("write file: %w", err)
-	}
-
-	return nil
-}
-
-// publishJobCreatedEvent publishes a job.created event to NATS.
-func (s *Service) publishJobCreatedEvent(ctx context.Context, job postgres.Job, deviceID string) error {
-	payload := events.JobCreatedPayload{
-		JobID:     job.JobID,
-		UserID:    job.UserID,
-		SessionID: job.SessionID,
-		State:     job.State,
-	}
-
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-
-	envelope := schema.EventEnvelope{
-		EventID:   generateID(16),
-		TraceID:   job.TraceID,
-		UserID:    job.UserID,
-		SessionID: job.SessionID,
-		DeviceID:  deviceID,
-		EventType: "job.created",
-		Version:   schema.VersionV1,
-		Timestamp: time.Now().UTC(),
-		Payload:   payloadBytes,
-	}
-
-	envelopeBytes, err := json.Marshal(envelope)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-
-	_, err = s.js.Publish(string(schema.JobCreatedV1), envelopeBytes)
-	if err != nil {
-		return fmt.Errorf("publish event: %w", err)
-	}
-
-	return nil
 }
 
 // generateID creates a random hex-encoded ID of the specified byte length.
